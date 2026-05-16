@@ -1,7 +1,6 @@
 import {
   EndpointHealthResponse,
   FailureFingerprintResponse,
-  MetricResponse,
   OverviewResponse,
   RecommendationResponse,
   ReplayAnalysisResponse,

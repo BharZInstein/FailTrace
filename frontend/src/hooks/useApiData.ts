@@ -18,12 +18,18 @@ export default function useApiData<T>(
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const mountedRef = useRef(true);
+  const fetcherRef = useRef(fetcher);
+  const depsKey = JSON.stringify(deps);
+
+  useEffect(() => {
+    fetcherRef.current = fetcher;
+  }, [fetcher]);
 
   const load = useCallback(async () => {
     try {
       setIsLoading(true);
       setError(null);
-      const result = await fetcher();
+      const result = await fetcherRef.current();
       if (mountedRef.current) {
         setData(result);
       }
@@ -36,11 +42,12 @@ export default function useApiData<T>(
         setIsLoading(false);
       }
     }
-  }, deps);
+  }, []);
 
   useEffect(() => {
+    void depsKey;
     mountedRef.current = true;
-    load();
+    void Promise.resolve().then(load);
 
     let interval: NodeJS.Timeout | null = null;
     if (options?.pollIntervalMs) {
@@ -52,7 +59,7 @@ export default function useApiData<T>(
         clearInterval(interval);
       }
     };
-  }, [load, options?.pollIntervalMs]);
+  }, [load, options?.pollIntervalMs, depsKey]);
 
   return { data, isLoading, error, refetch: load };
 }

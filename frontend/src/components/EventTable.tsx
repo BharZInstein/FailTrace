@@ -35,7 +35,7 @@ export default function EventTable({ events }: { events: WebhookEvent[] }) {
     }
     if (sortByConfidence) {
       result = [...result].sort(
-        (a, b) => b.replayConfidence - a.replayConfidence
+        (a, b) => b.replayConfidenceScore - a.replayConfidenceScore
       );
     }
     return result;

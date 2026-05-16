@@ -9,6 +9,7 @@ export const api = {
   getEvents: () => apiClient.get("/events"),
   getEvent: (id: string) => apiClient.get(`/event/${id}`),
   getHealth: () => apiClient.get("/health"),
+  getEndpoints: () => apiClient.get("/endpoints"),
   getFingerprints: () => apiClient.get("/fingerprints"),
   getReplayAnalysis: () => apiClient.get("/replay-analysis"),
   getRecommendations: () => apiClient.get("/recommendations"),
