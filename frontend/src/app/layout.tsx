@@ -1,10 +1,10 @@
 import type { Metadata } from "next";
+import AppNav from "@/components/AppNav";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Adaptive Webhook Reliability & Replay Intelligence System",
-  description:
-    "Operational intelligence dashboard for webhook reliability, replay safety, and adaptive retry optimization.",
+  title: "FailTrace",
+  description: "Webhook reliability and replay decision engine.",
 };
 
 export default function RootLayout({
@@ -14,8 +14,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className="h-full antialiased">
-      <body className="min-h-full bg-slate-950 text-slate-100">
-        {children}
+      <body className="min-h-full bg-[#0a0a0a] text-white">
+        <AppNav />
+        <main className="mx-auto max-w-7xl px-5 py-6">{children}</main>
       </body>
     </html>
   );
