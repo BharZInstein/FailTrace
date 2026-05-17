@@ -13,9 +13,34 @@ from app.models import (
     WebhookDecision,
 )
 
+try:
+    from app.ml_logic import WebhookMLSystem
+except Exception:  # pragma: no cover - keeps API bootable if ML deps are missing.
+    WebhookMLSystem = None  # type: ignore[assignment]
+
 
 SUCCESS_CODES = set(range(200, 300))
 RETRYABLE_CODES = {408, 425, 429, 500, 502, 503, 504}
+ML_SYSTEM = None
+ML_LOAD_ERROR: str | None = None
+
+
+def get_ml_system():
+    global ML_SYSTEM, ML_LOAD_ERROR
+    if WebhookMLSystem is None:
+        ML_LOAD_ERROR = "ML dependencies are not available."
+        return None
+    if ML_SYSTEM is not None:
+        return ML_SYSTEM
+    try:
+        system = WebhookMLSystem(data_dir="data", model_dir="models")
+        system.load_models()
+        ML_SYSTEM = system
+        ML_LOAD_ERROR = None
+        return ML_SYSTEM
+    except Exception as exc:  # pragma: no cover - runtime environment/model artifact guard.
+        ML_LOAD_ERROR = str(exc)
+        return None
 
 
 def _clamp_score(value: float) -> int:
@@ -36,6 +61,42 @@ def detect_failure_reason(attempt: WebhookAttemptIn) -> FailureReason:
     if attempt.status_code >= 500 or attempt.status_code in {400, 422}:
         return FailureReason.MALFORMED_RESPONSE
     return FailureReason.NONE
+
+
+def normalize_ml_failure_reason(value: str) -> FailureReason:
+    mapping = {
+        "none": FailureReason.NONE,
+        "invalid_signature": FailureReason.INVALID_SIGNATURE,
+        "timeout": FailureReason.TIMEOUT,
+        "endpoint_deleted": FailureReason.ENDPOINT_DELETED,
+        "customer_endpoint_down": FailureReason.ENDPOINT_DELETED,
+        "rate_limited": FailureReason.RATE_LIMITED,
+        "malformed_response": FailureReason.MALFORMED_RESPONSE,
+        "payload_too_large": FailureReason.MALFORMED_RESPONSE,
+        "duplicate_event": FailureReason.DUPLICATE_EVENT,
+        "replay_without_fix": FailureReason.DUPLICATE_EVENT,
+    }
+    return mapping.get(str(value), FailureReason.NONE)
+
+
+def normalize_ml_action(value: str) -> RecommendedAction:
+    mapping = {
+        "none": RecommendedAction.NONE,
+        "Retry Now": RecommendedAction.RETRY_NOW,
+        "retry_now": RecommendedAction.RETRY_NOW,
+        "Delay Retry": RecommendedAction.DELAY_RETRY,
+        "wait_and_retry": RecommendedAction.DELAY_RETRY,
+        "apply_exponential_backoff": RecommendedAction.DELAY_RETRY,
+        "Stop Retry": RecommendedAction.STOP_RETRY,
+        "fix_retry_logic": RecommendedAction.STOP_RETRY,
+        "Verify Webhook Secret": RecommendedAction.VERIFY_SECRET,
+        "verify_signature_config": RecommendedAction.VERIFY_SECRET,
+        "Check Endpoint Status": RecommendedAction.CHECK_ENDPOINT,
+        "contact_customer_endpoint_deleted": RecommendedAction.CHECK_ENDPOINT,
+        "reduce_payload_size": RecommendedAction.STOP_RETRY,
+        "investigate": RecommendedAction.STOP_RETRY,
+    }
+    return mapping.get(str(value), RecommendedAction.NONE)
 
 
 def classify_delivery_state(attempt: WebhookAttemptIn, failure_reason: FailureReason) -> DeliveryState:
@@ -166,7 +227,11 @@ def explain_decision(
     return explanation
 
 
-def analyze_attempt(attempt: WebhookAttemptIn, history: pd.DataFrame | None = None) -> WebhookDecision:
+def analyze_attempt(
+    attempt: WebhookAttemptIn,
+    history: pd.DataFrame | None = None,
+    use_ml: bool = True,
+) -> WebhookDecision:
     history = history if history is not None else pd.DataFrame()
     endpoint_history = history[history["endpoint_id"] == attempt.endpoint_id] if not history.empty else pd.DataFrame()
 
@@ -182,6 +247,90 @@ def analyze_attempt(attempt: WebhookAttemptIn, history: pd.DataFrame | None = No
     )
     recommended_action = recommend_action(attempt, failure_reason, delivery_state, replay_confidence_score)
     features = build_features(attempt, endpoint_history)
+    explanation = explain_decision(attempt, failure_reason, delivery_state, replay_confidence_score)
+
+    ml_system = get_ml_system() if use_ml else None
+    if ml_system is not None:
+        try:
+            response_category = "success" if attempt.status_code in SUCCESS_CODES else "server_error"
+            if attempt.status_code == 429:
+                response_category = "rate_limited"
+            elif not attempt.signature_valid:
+                response_category = "invalid_signature"
+            elif not attempt.endpoint_active or attempt.status_code in {404, 410}:
+                response_category = "endpoint_not_found"
+            elif attempt.status_code in {408, 504} or attempt.response_time_ms >= 8_000:
+                response_category = "timeout"
+
+            events_df = pd.DataFrame(
+                [
+                    {
+                        "event_id": attempt.event_id,
+                        "event_type": "webhook.event",
+                        "priority": "normal",
+                        "payload_size_kb": attempt.payload_size_kb,
+                    }
+                ]
+            )
+            attempts_df = pd.DataFrame(
+                [
+                    {
+                        "event_id": attempt.event_id,
+                        "endpoint_id": attempt.endpoint_id,
+                        "attempt_number": attempt.attempt_number,
+                        "http_status": attempt.status_code,
+                        "response_time_ms": attempt.response_time_ms,
+                        "response_body_category": response_category,
+                        "timeout": attempt.status_code in {408, 504} or attempt.response_time_ms >= 8_000,
+                        "signature_valid": attempt.signature_valid,
+                    }
+                ]
+            )
+            endpoints_df = pd.DataFrame(
+                [
+                    {
+                        "endpoint_id": attempt.endpoint_id,
+                        "avg_success_rate": features["endpoint_success_rate"] or 0.5,
+                        "rate_limit_per_minute": 60,
+                    }
+                ]
+            )
+            ml_result = ml_system.predict(events_df, attempts_df, endpoints_df)[0]
+            ml_failure_reason = normalize_ml_failure_reason(str(ml_result["failure_reason"]))
+            ml_action = normalize_ml_action(str(ml_result["recommended_action"]))
+
+            hard_blocked = failure_reason in {
+                FailureReason.INVALID_SIGNATURE,
+                FailureReason.ENDPOINT_DELETED,
+                FailureReason.DUPLICATE_EVENT,
+            }
+            if failure_reason == FailureReason.NONE and ml_failure_reason != FailureReason.NONE:
+                failure_reason = ml_failure_reason
+                delivery_state = classify_delivery_state(attempt, failure_reason)
+            if ml_action != RecommendedAction.NONE:
+                recommended_action = ml_action
+
+            endpoint_health_score = _clamp_score(float(ml_result["endpoint_health_score"]))
+            replay_confidence_score = _clamp_score(float(ml_result["replay_confidence_score"]))
+            safe_to_replay = bool(ml_result["safe_to_replay"]) and not hard_blocked and delivery_state not in {
+                DeliveryState.DELIVERED,
+                DeliveryState.DUPLICATE,
+                DeliveryState.UNSAFE_TO_REPLAY,
+            }
+            if hard_blocked:
+                safe_to_replay = False
+            features["ml_failure_reason_raw"] = str(ml_result["failure_reason"])
+            features["ml_recommended_action_raw"] = str(ml_result["recommended_action"])
+            features["decision_source"] = "ml_with_rule_guardrails"
+            explanation = explain_decision(attempt, failure_reason, delivery_state, replay_confidence_score)
+            explanation.append("ML intelligence layer scored replay risk with deterministic safety guardrails.")
+        except Exception as exc:
+            features["decision_source"] = "rules_fallback"
+            features["ml_error"] = str(exc)
+    else:
+        features["decision_source"] = "rules" if use_ml else "rules_bulk_view"
+        if ML_LOAD_ERROR:
+            features["ml_error"] = ML_LOAD_ERROR
 
     return WebhookDecision(
         event_id=attempt.event_id,
@@ -192,19 +341,19 @@ def analyze_attempt(attempt: WebhookAttemptIn, history: pd.DataFrame | None = No
         recommended_action=recommended_action,
         endpoint_health_score=endpoint_health_score,
         replay_confidence_score=replay_confidence_score,
-        explanation=explain_decision(attempt, failure_reason, delivery_state, replay_confidence_score),
+        explanation=explanation,
         features=features,
     )
 
 
-def analyze_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+def analyze_dataframe(df: pd.DataFrame, use_ml: bool = False) -> pd.DataFrame:
     decisions = []
     history_by_endpoint: dict[str, list[dict[str, Any]]] = defaultdict(list)
 
     for _, row in df.sort_values(["endpoint_id", "created_at", "attempt_number"]).iterrows():
         attempt = WebhookAttemptIn(**row.to_dict())
         history = pd.DataFrame(history_by_endpoint[attempt.endpoint_id])
-        decision = analyze_attempt(attempt, history)
+        decision = analyze_attempt(attempt, history, use_ml=use_ml)
         decisions.append(decision.model_dump(mode="json"))
         history_by_endpoint[attempt.endpoint_id].append(row.to_dict())
 

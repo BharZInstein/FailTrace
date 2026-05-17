@@ -1,16 +1,21 @@
-const stateStyles: Record<string, string> = {
-  Delivered: "bg-emerald-500/10 text-emerald-300 border-emerald-500/20",
-  Failed: "bg-rose-500/10 text-rose-300 border-rose-500/20",
-  Recovered: "bg-blue-500/10 text-blue-300 border-blue-500/20",
-  Queued: "bg-amber-500/10 text-amber-300 border-amber-500/20",
-};
+import { formatState } from "@/lib/failtrace-api";
+
+export function StatusCodeBadge({ code }: { code: number }) {
+  const cls =
+    code >= 200 && code < 300
+      ? "border-[#00ff94]/30 bg-[#00ff94]/10 text-[#00ff94]"
+      : code === 429 || code === 408
+        ? "border-[#f59e0b]/40 bg-[#f59e0b]/10 text-[#f59e0b]"
+        : "border-[#ef4444]/40 bg-[#ef4444]/10 text-[#ef4444]";
+  return <span className={`border px-2 py-0.5 font-mono text-xs ${cls}`}>{code}</span>;
+}
 
 export default function StatusBadge({ state }: { state: string }) {
-  return (
-    <span
-      className={`rounded-full border px-2 py-0.5 text-xs ${stateStyles[state] ?? "border-slate-700 text-slate-300"}`}
-    >
-      {state}
-    </span>
-  );
+  const cls =
+    state === "delivered" || state === "recovered"
+      ? "border-[#00ff94]/30 bg-[#00ff94]/10 text-[#00ff94]"
+      : state === "retrying"
+        ? "border-[#f59e0b]/40 bg-[#f59e0b]/10 text-[#f59e0b]"
+        : "border-[#ef4444]/40 bg-[#ef4444]/10 text-[#ef4444]";
+  return <span className={`border px-2 py-0.5 text-xs ${cls}`}>{formatState(state)}</span>;
 }

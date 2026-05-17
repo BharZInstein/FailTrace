@@ -24,7 +24,7 @@ npm run dev
 Open the frontend URL printed by Next.js, usually:
 
 ```text
-http://localhost:3000/overview
+http://localhost:3000
 ```
 
 Backend API docs:
@@ -33,4 +33,23 @@ Backend API docs:
 http://127.0.0.1:8000/docs
 ```
 
-The frontend defaults to live backend data. Set `NEXT_PUBLIC_USE_MOCK=true` only if you want the frontend mock dataset again.
+The frontend uses live backend data from `http://localhost:8000`.
+
+## Current Pages
+
+- `/` - main reliability dashboard
+- `/analyze` - event replay analyzer
+- `/endpoints` - endpoint monitor with side-panel history
+
+## Backend API
+
+- `GET /health`
+- `POST /seed`
+- `GET /events`
+- `GET /endpoints`
+- `POST /analyze`
+- `GET /attempts`
+- `GET /decisions`
+- `GET /analytics/summary`
+
+The ML intelligence engine is used by `POST /analyze` for single-event replay scoring. Bulk dashboard views use fast deterministic scoring so page loads stay responsive.
