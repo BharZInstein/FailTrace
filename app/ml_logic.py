@@ -25,30 +25,21 @@ class WebhookMLSystem:
         self.loaded = False
         
     def _prepare_features(self, events_df, attempts_df, endpoints_df, is_training=False):
-        # Aggregate attempt features per event
-        # We look at the history of attempts for a given event to make predictions
-        
         attempts_agg = attempts_df.groupby('event_id').agg({
             'attempt_number': 'max',
-            'http_status': lambda x: list(x)[-1] if len(x) > 0 else 0, # last http status
+            'http_status': lambda x: list(x)[-1] if len(x) > 0 else 0,
             'response_time_ms': 'mean',
             'response_body_category': lambda x: list(x)[-1] if len(x) > 0 else 'none',
             'timeout': 'sum',
             'signature_valid': 'all'
         }).reset_index()
         
-        # Merge datasets
         df = events_df.merge(attempts_agg, on='event_id', how='left')
         
-        # In actual predict time, we might only have attempts from the database.
-        # But for training, we use our generated logs.
-        # Ensure we have endpoints data joined via events (we need endpoint_id)
-        # Wait, events_df generated without endpoint_id. Let's merge via attempts which has endpoint_id.
         event_endpoint_map = attempts_df[['event_id', 'endpoint_id']].drop_duplicates()
         df = df.merge(event_endpoint_map, on='event_id', how='left')
         df = df.merge(endpoints_df, on='endpoint_id', how='left')
         
-        # Fill NA
         df['payload_size_kb'] = df['payload_size_kb'].fillna(0)
         df['response_time_ms'] = df['response_time_ms'].fillna(0)
         df['attempt_number'] = df['attempt_number'].fillna(0)
@@ -57,7 +48,6 @@ class WebhookMLSystem:
         df['timeout'] = df['timeout'].fillna(0)
         df['signature_valid'] = df['signature_valid'].fillna(True)
         
-        # Encode categorical variables
         if is_training:
             df['event_type_encoded'] = self.le_event_type.fit_transform(df['event_type'].astype(str))
             df['priority_encoded'] = self.le_priority.fit_transform(df['priority'].astype(str))
@@ -66,7 +56,6 @@ class WebhookMLSystem:
         else:
             def safe_transform(le, series):
                 classes = list(le.classes_)
-                # Fallback to 0 if the class is totally unseen during inference
                 return series.apply(lambda x: le.transform([x])[0] if x in classes else 0)
                 
             df['event_type_encoded'] = safe_transform(self.le_event_type, df['event_type'].astype(str))
@@ -74,7 +63,6 @@ class WebhookMLSystem:
             df['http_status_encoded'] = safe_transform(self.le_http_status, df['http_status'].astype(str))
             df['response_category_encoded'] = safe_transform(self.le_response_category, df['response_body_category'].astype(str))
         
-        # Features for models
         feature_cols = [
             'payload_size_kb', 'attempt_number', 'response_time_ms', 'timeout',
             'signature_valid', 'event_type_encoded', 'priority_encoded',
@@ -82,7 +70,6 @@ class WebhookMLSystem:
             'avg_success_rate', 'rate_limit_per_minute'
         ]
         
-        # If any endpoint feature is NA, fill it
         for col in ['avg_success_rate', 'rate_limit_per_minute']:
             if col in df.columns:
                 df[col] = df[col].fillna(df[col].mean() if df[col].mean() is not np.nan else 0)
@@ -103,35 +90,30 @@ class WebhookMLSystem:
         
         X = df[feature_cols]
         
-        # Model 1: Replay Confidence (Safe to Replay)
         y_replay = df['safe_to_replay'].astype(int)
         print("Training Replay Confidence Model...")
         self.clf_replay.fit(X, y_replay)
         preds = self.clf_replay.predict(X)
         print(f"Replay Accuracy: {accuracy_score(y_replay, preds):.4f}")
         
-        # Model 2: Failure Pattern Detection (Reason)
         y_reason = df['failure_reason']
         print("Training Failure Reason Model...")
         self.clf_reason.fit(X, y_reason)
         preds_reason = self.clf_reason.predict(X)
         print(f"Reason Accuracy: {accuracy_score(y_reason, preds_reason):.4f}")
         
-        # Model 3: Smart Recommendation Engine
         y_action = df['recommended_action']
         print("Training Recommendation Model...")
         self.clf_action.fit(X, y_action)
         preds_action = self.clf_action.predict(X)
         print(f"Action Accuracy: {accuracy_score(y_action, preds_action):.4f}")
         
-        # Compute Endpoint Health Score
         self.compute_endpoint_health(attempts_df)
         
         self.save_models()
         print("Models saved successfully.")
         
     def prepare_training_data(self, events_df, attempts_df, endpoints_df, labels_df):
-        # Only use events that are in labels_df
         train_events = events_df[events_df['event_id'].isin(labels_df['event_id'])]
         df, feature_cols = self._prepare_features(train_events, attempts_df, endpoints_df, is_training=True)
         
@@ -154,11 +136,6 @@ class WebhookMLSystem:
             })
         ).reset_index()
         
-        # Formula: Base 100
-        # - (timeout_rate * 40)
-        # - (error_rate * 50)
-        # - (rate_limit_rate * 20)
-        # * success_rate multiplier
         stats['health_score'] = 100 - (stats['timeout_rate'] * 40) - (stats['error_rate'] * 50) - (stats['rate_limit_rate'] * 20)
         stats['health_score'] = stats['health_score'] * (0.5 + 0.5 * stats['success_rate'])
         stats['health_score'] = stats['health_score'].clip(0, 100).round(2)
@@ -172,7 +149,6 @@ class WebhookMLSystem:
         joblib.dump(self.clf_action, f"{self.model_dir}/clf_action.pkl")
         joblib.dump(self.endpoint_stats, f"{self.model_dir}/endpoint_health.pkl")
         
-        # Encoders
         joblib.dump(self.le_event_type, f"{self.model_dir}/le_event_type.pkl")
         joblib.dump(self.le_priority, f"{self.model_dir}/le_priority.pkl")
         joblib.dump(self.le_http_status, f"{self.model_dir}/le_http_status.pkl")
@@ -198,12 +174,10 @@ class WebhookMLSystem:
         df, feature_cols = self._prepare_features(events_df, attempts_df, endpoints_df, is_training=False)
         X = df[feature_cols]
         
-        # Get probabilities for safe to replay (Confidence score)
         replay_probs = self.clf_replay.predict_proba(X)
         safe_class_index = list(self.clf_replay.classes_).index(1)
         confidence_scores = replay_probs[:, safe_class_index] * 100
         
-        # Predict failure reason and recommended action
         reasons = self.clf_reason.predict(X)
         actions = self.clf_action.predict(X)
         
@@ -213,7 +187,6 @@ class WebhookMLSystem:
             if endpoint_id in self.endpoint_stats:
                 health = self.endpoint_stats[endpoint_id]
             else:
-                # Dynamically calculate for new endpoints based on provided payload history
                 ep_attempts = attempts_df[attempts_df['endpoint_id'] == endpoint_id]
                 if len(ep_attempts) > 0:
                     success_rate = (ep_attempts['http_status'] == 200).mean()
@@ -248,7 +221,6 @@ class WebhookMLSystem:
         health = self.endpoint_stats.get(endpoint_id, 50.0)
         
         if failure_reason == 'rate_limited':
-            # Q-Learning derived policy: If health is low and rate limited, wait much longer.
             delay = 300 if health < 60 else 60
             return {"strategy": "exponential_backoff", "initial_delay_seconds": delay, "max_retries": 3}
         elif failure_reason == 'customer_endpoint_down' or failure_reason == 'timeout':
@@ -262,7 +234,6 @@ if __name__ == "__main__":
     system = WebhookMLSystem()
     system.train()
     
-    # Test prediction on some test events
     print("\nRunning inference on test data...")
     events_df = pd.read_csv("data/events_test.csv")
     attempts_df = pd.read_csv("data/delivery_attempts.csv")

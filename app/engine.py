@@ -15,8 +15,8 @@ from app.models import (
 
 try:
     from app.ml_logic import WebhookMLSystem
-except Exception:  # pragma: no cover - keeps API bootable if ML deps are missing.
-    WebhookMLSystem = None  # type: ignore[assignment]
+except Exception:
+    WebhookMLSystem = None
 
 
 SUCCESS_CODES = set(range(200, 300))
@@ -38,7 +38,7 @@ def get_ml_system():
         ML_SYSTEM = system
         ML_LOAD_ERROR = None
         return ML_SYSTEM
-    except Exception as exc:  # pragma: no cover - runtime environment/model artifact guard.
+    except Exception as exc:
         ML_LOAD_ERROR = str(exc)
         return None
 
