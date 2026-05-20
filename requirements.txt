@@ -7,3 +7,4 @@ joblib>=1.4
 faker>=33.0
 pydantic>=2.10,<3.0
 python-dotenv>=1.0,<2.0
+langgraph>=0.2,<1.0

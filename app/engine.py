@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Any
+from typing import Any, TypedDict
 
 import pandas as pd
 
@@ -14,6 +14,12 @@ from app.models import (
 )
 
 try:
+    from langgraph.graph import END, StateGraph
+except Exception:
+    END = None
+    StateGraph = None
+
+try:
     from app.ml_logic import WebhookMLSystem
 except Exception:
     WebhookMLSystem = None
@@ -23,6 +29,20 @@ SUCCESS_CODES = set(range(200, 300))
 RETRYABLE_CODES = {408, 425, 429, 500, 502, 503, 504}
 ML_SYSTEM = None
 ML_LOAD_ERROR: str | None = None
+RULE_GRAPH = None
+
+
+class RuleAnalysisState(TypedDict, total=False):
+    attempt: WebhookAttemptIn
+    endpoint_history: pd.DataFrame
+    failure_reason: FailureReason
+    delivery_state: DeliveryState
+    endpoint_health_score: int
+    replay_confidence_score: int
+    safe_to_replay: bool
+    recommended_action: RecommendedAction
+    features: dict[str, Any]
+    explanation: list[str]
 
 
 def get_ml_system():
@@ -227,6 +247,104 @@ def explain_decision(
     return explanation
 
 
+def _detect_failure_node(state: RuleAnalysisState) -> RuleAnalysisState:
+    state["failure_reason"] = detect_failure_reason(state["attempt"])
+    return state
+
+
+def _classify_state_node(state: RuleAnalysisState) -> RuleAnalysisState:
+    state["delivery_state"] = classify_delivery_state(state["attempt"], state["failure_reason"])
+    return state
+
+
+def _score_health_node(state: RuleAnalysisState) -> RuleAnalysisState:
+    state["endpoint_health_score"] = score_endpoint_health(state["endpoint_history"], state["attempt"])
+    return state
+
+
+def _score_replay_node(state: RuleAnalysisState) -> RuleAnalysisState:
+    state["replay_confidence_score"] = score_replay_confidence(
+        state["attempt"],
+        state["delivery_state"],
+        state["failure_reason"],
+        state["endpoint_health_score"],
+    )
+    return state
+
+
+def _recommend_action_node(state: RuleAnalysisState) -> RuleAnalysisState:
+    delivery_state = state["delivery_state"]
+    replay_confidence_score = state["replay_confidence_score"]
+    state["safe_to_replay"] = (
+        replay_confidence_score >= 55
+        and delivery_state not in {DeliveryState.DELIVERED, DeliveryState.DUPLICATE, DeliveryState.UNSAFE_TO_REPLAY}
+    )
+    state["recommended_action"] = recommend_action(
+        state["attempt"],
+        state["failure_reason"],
+        delivery_state,
+        replay_confidence_score,
+    )
+    return state
+
+
+def _explain_node(state: RuleAnalysisState) -> RuleAnalysisState:
+    state["features"] = build_features(state["attempt"], state["endpoint_history"])
+    state["explanation"] = explain_decision(
+        state["attempt"],
+        state["failure_reason"],
+        state["delivery_state"],
+        state["replay_confidence_score"],
+    )
+    return state
+
+
+def get_rule_graph():
+    global RULE_GRAPH
+    if StateGraph is None or END is None:
+        return None
+    if RULE_GRAPH is not None:
+        return RULE_GRAPH
+
+    graph = StateGraph(RuleAnalysisState)
+    graph.add_node("detect_failure", _detect_failure_node)
+    graph.add_node("classify_state", _classify_state_node)
+    graph.add_node("score_health", _score_health_node)
+    graph.add_node("score_replay", _score_replay_node)
+    graph.add_node("recommend_action", _recommend_action_node)
+    graph.add_node("explain", _explain_node)
+    graph.set_entry_point("detect_failure")
+    graph.add_edge("detect_failure", "classify_state")
+    graph.add_edge("classify_state", "score_health")
+    graph.add_edge("score_health", "score_replay")
+    graph.add_edge("score_replay", "recommend_action")
+    graph.add_edge("recommend_action", "explain")
+    graph.add_edge("explain", END)
+    RULE_GRAPH = graph.compile()
+    return RULE_GRAPH
+
+
+def run_rule_analysis(attempt: WebhookAttemptIn, endpoint_history: pd.DataFrame) -> RuleAnalysisState:
+    graph = get_rule_graph()
+    initial_state: RuleAnalysisState = {
+        "attempt": attempt,
+        "endpoint_history": endpoint_history,
+    }
+    if graph is not None:
+        result = graph.invoke(initial_state)
+        result["features"]["workflow_engine"] = "langgraph"
+        return result
+
+    state = _detect_failure_node(initial_state)
+    state = _classify_state_node(state)
+    state = _score_health_node(state)
+    state = _score_replay_node(state)
+    state = _recommend_action_node(state)
+    state = _explain_node(state)
+    state["features"]["workflow_engine"] = "python"
+    return state
+
+
 def analyze_attempt(
     attempt: WebhookAttemptIn,
     history: pd.DataFrame | None = None,
@@ -235,19 +353,15 @@ def analyze_attempt(
     history = history if history is not None else pd.DataFrame()
     endpoint_history = history[history["endpoint_id"] == attempt.endpoint_id] if not history.empty else pd.DataFrame()
 
-    failure_reason = detect_failure_reason(attempt)
-    delivery_state = classify_delivery_state(attempt, failure_reason)
-    endpoint_health_score = score_endpoint_health(endpoint_history, attempt)
-    replay_confidence_score = score_replay_confidence(
-        attempt, delivery_state, failure_reason, endpoint_health_score
-    )
-    safe_to_replay = (
-        replay_confidence_score >= 55
-        and delivery_state not in {DeliveryState.DELIVERED, DeliveryState.DUPLICATE, DeliveryState.UNSAFE_TO_REPLAY}
-    )
-    recommended_action = recommend_action(attempt, failure_reason, delivery_state, replay_confidence_score)
-    features = build_features(attempt, endpoint_history)
-    explanation = explain_decision(attempt, failure_reason, delivery_state, replay_confidence_score)
+    analysis = run_rule_analysis(attempt, endpoint_history)
+    failure_reason = analysis["failure_reason"]
+    delivery_state = analysis["delivery_state"]
+    endpoint_health_score = analysis["endpoint_health_score"]
+    replay_confidence_score = analysis["replay_confidence_score"]
+    safe_to_replay = analysis["safe_to_replay"]
+    recommended_action = analysis["recommended_action"]
+    features = analysis["features"]
+    explanation = analysis["explanation"]
 
     ml_system = get_ml_system() if use_ml else None
     if ml_system is not None:

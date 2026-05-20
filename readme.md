@@ -19,6 +19,7 @@ Instead of only showing failed webhook attempts, FailTrace classifies delivery s
 - Endpoint monitor with health trends and event history
 - Failure classification for signatures, timeouts, rate limits, deleted endpoints, malformed responses, and duplicates
 - Replay confidence scoring with recommended actions
+- LangGraph workflow for the replay-decision pipeline
 - ML-assisted single-event analysis with deterministic guardrails
 
 ## Product Flow
@@ -67,7 +68,7 @@ Next.js frontend
         v
 FastAPI backend
         |
-        | analysis + storage
+        | LangGraph decision workflow
         v
 SQLite + generated webhook dataset
         |
@@ -79,7 +80,7 @@ ML replay intelligence layer
 ## Tech Stack
 
 - Frontend: Next.js, React, TypeScript, Tailwind CSS, Recharts, Axios
-- Backend: Python, FastAPI, Pandas, SQLite, Pydantic
+- Backend: Python, FastAPI, Pandas, SQLite, Pydantic, LangGraph
 - ML: scikit-learn, NumPy, joblib
 - Deployment: Vercel frontend, Render backend
 
