@@ -1,17 +1,20 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { getHealth } from "@/lib/failtrace-api";
 
 const links = [
-  { href: "/", label: "Dashboard" },
+  { href: "/", label: "Home" },
+  { href: "/dashboard", label: "Dashboard" },
   { href: "/analyze", label: "Analyzer" },
   { href: "/endpoints", label: "Endpoints" },
 ];
 
 export default function AppNav() {
   const [online, setOnline] = useState(false);
+  const pathname = usePathname();
 
   useEffect(() => {
     let mounted = true;
@@ -43,7 +46,11 @@ export default function AppNav() {
               <Link
                 key={link.href}
                 href={link.href}
-                className="rounded-md px-3 py-1.5 text-sm text-[#d1d5db] transition hover:bg-[#111111] hover:text-white"
+                className={`rounded-md px-3 py-1.5 text-sm transition ${
+                  pathname === link.href
+                    ? "bg-[#111111] text-white"
+                    : "text-[#d1d5db] hover:bg-[#111111] hover:text-white"
+                }`}
               >
                 {link.label}
               </Link>

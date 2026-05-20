@@ -3,8 +3,11 @@ import AppNav from "@/components/AppNav";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "FailTrace",
-  description: "Webhook reliability and replay decision engine.",
+  title: {
+    default: "FailTrace",
+    template: "%s | FailTrace",
+  },
+  description: "Webhook reliability control for replay decisions, endpoint health, and delivery visibility.",
 };
 
 export default function RootLayout({
