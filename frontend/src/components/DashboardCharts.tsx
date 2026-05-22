@@ -64,7 +64,7 @@ export function EndpointHealthChart({ endpoints }: { endpoints: EndpointMonitor[
     .slice()
     .sort((a, b) => a.avg_health_score - b.avg_health_score)
     .map((endpoint) => ({
-      endpoint: endpoint.endpoint_url.replace("https://hooks.failtrace.dev/", ""),
+      endpoint: endpoint.endpoint_url.split("/").filter(Boolean).at(-1) ?? endpoint.endpoint_id,
       score: endpoint.avg_health_score,
     }));
 

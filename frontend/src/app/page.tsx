@@ -1,33 +1,10 @@
+"use client";
+
 import Link from "next/link";
+import { useEffect, useState } from "react";
 import { StatusCodeBadge, default as StatusBadge } from "@/components/StatusBadge";
 import HealthBar from "@/components/HealthBar";
-
-const previewEvents = [
-  {
-    eventId: "evt_pay_91k2",
-    status: 429,
-    state: "retrying",
-    action: "Delay Retry",
-    health: 72,
-    endpoint: "checkout-prod",
-  },
-  {
-    eventId: "evt_user_8m13",
-    status: 401,
-    state: "unsafe_to_replay",
-    action: "Verify Webhook Secret",
-    health: 44,
-    endpoint: "crm-sync",
-  },
-  {
-    eventId: "evt_inv_47qz",
-    status: 201,
-    state: "recovered",
-    action: "No Action",
-    health: 91,
-    endpoint: "billing-prod",
-  },
-];
+import { FailTraceEvent, getEvents } from "@/lib/failtrace-api";
 
 const capabilities = [
   {
@@ -63,6 +40,27 @@ const workflow = [
 ];
 
 export default function HomePage() {
+  const [previewEvents, setPreviewEvents] = useState<FailTraceEvent[]>([]);
+  const [loadingPreview, setLoadingPreview] = useState(true);
+  const [previewError, setPreviewError] = useState("");
+
+  useEffect(() => {
+    const loadPreview = async () => {
+      try {
+        setLoadingPreview(true);
+        setPreviewError("");
+        const events = await getEvents();
+        setPreviewEvents(events.slice(0, 3));
+      } catch (err) {
+        setPreviewError(err instanceof Error ? err.message : "Unable to load recent webhook decisions");
+      } finally {
+        setLoadingPreview(false);
+      }
+    };
+
+    loadPreview();
+  }, []);
+
   return (
     <div className="space-y-12">
       <section
@@ -128,25 +126,35 @@ export default function HomePage() {
             </div>
 
             <div className="mt-4 space-y-3">
+              {previewError && (
+                <div className="border border-[#7f1d1d] bg-[#190d0d] px-3 py-2 text-sm text-[#fecaca]">
+                  {previewError}
+                </div>
+              )}
+              {loadingPreview && (
+                <div className="border border-[#1f1f1f] bg-[#0d0d0d] p-3 text-sm text-[#6b7280]">
+                  Loading recent webhook decisions...
+                </div>
+              )}
               {previewEvents.map((event) => (
-                <div key={event.eventId} className="border border-[#1f1f1f] bg-[#0d0d0d] p-3">
+                <div key={event.event_id} className="border border-[#1f1f1f] bg-[#0d0d0d] p-3">
                   <div className="flex items-start justify-between gap-3">
                     <div>
-                      <div className="font-mono text-xs text-white">{event.eventId}</div>
+                      <div className="font-mono text-xs text-white">{event.event_id}</div>
                       <div className="mt-1 font-mono text-[11px] uppercase tracking-wide text-[#6b7280]">
-                        {event.endpoint}
+                        {event.endpoint_id.replace("ep_", "").replaceAll("_", "-")}
                       </div>
                     </div>
-                    <StatusCodeBadge code={event.status} />
+                    <StatusCodeBadge code={event.status_code} />
                   </div>
                   <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
-                    <StatusBadge state={event.state} />
+                    <StatusBadge state={event.delivery_state} />
                     <span className="border border-[#1f1f1f] px-2 py-0.5 font-mono text-[#d1d5db]">
-                      {event.action}
+                      {event.recommended_action}
                     </span>
                   </div>
                   <div className="mt-3">
-                    <HealthBar value={event.health} />
+                    <HealthBar value={event.endpoint_health_score} />
                   </div>
                 </div>
               ))}
